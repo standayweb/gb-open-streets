@@ -1,0 +1,41 @@
+name: build packs
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Council codes to build, comma separated (blank = all of GB). Test builds go to the 'test' release."
+        required: false
+        default: ""
+  schedule:
+    - cron: "17 4 3 1,4,7,10 *"   # quarterly, after the ONS and OS releases
+permissions:
+  contents: write
+concurrency: build-packs
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install numpy pyproj
+      - name: build
+        run: python3 build/build_packs.py --workdir "$RUNNER_TEMP/dl" --out packs --only "${{ inputs.only }}" 2>&1 | tee build.log
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp build.log packs/build.log
+          if [ -n "${{ inputs.only }}" ]; then
+            TAG=test
+            gh release delete "$TAG" -y --cleanup-tag || true
+            gh release create "$TAG" --prerelease --title "Test build" --notes "Test build of ${{ inputs.only }}" packs/*
+          else
+            TAG="data-$(date +%Y-%m-%d)"
+            gh release delete "$TAG" -y --cleanup-tag || true
+            gh release create "$TAG" --latest --title "Data $(date +%Y-%m-%d)" --notes-file README.md packs/*
+            # keep the two newest data releases
+            gh release list --limit 50 --json tagName --jq '.[].tagName' | grep '^data-' | sort -r | tail -n +3 | \
+              xargs -r -I{} gh release delete {} -y --cleanup-tag
+          fi
