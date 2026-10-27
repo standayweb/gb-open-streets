@@ -1,8 +1,16 @@
 name: probe
 on: workflow_dispatch
+permissions:
+  contents: write
 jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python3 -c "import urllib.parse" && python3 build/probe.py
+      - run: python3 build/probe.py > probe_out.txt 2>&1 || true
+      - name: save output to branch diag
+        run: |
+          git config user.name "build bot"; git config user.email "bot@users.noreply.github.com"
+          git checkout --orphan diag
+          git rm -rfq --cached . && find . -mindepth 1 -maxdepth 1 ! -name .git ! -name probe_out.txt -exec rm -rf {} +
+          git add probe_out.txt && git commit -qm "probe output" && git push -f origin diag
