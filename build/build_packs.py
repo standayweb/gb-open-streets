@@ -14,6 +14,7 @@ A pack is gzipped JSON:
           positions in 1e-5 degree units relative to o
   roads   {o: [lat0, lon0], d: [[name, class, [[dlat, dlon], ...]], ...]}
   places  [[name, local_type, lat, lon], ...]
+  streets [[road name or number, settlement OS puts it in, lat, lon], ...]   (OS Open Names)
 
 No personal data: an address point is a position and a postcode, nothing more.
 
@@ -221,20 +222,28 @@ def read_roads(gpkg, tmp, idx):
 # ---------------------------------------------------------------- places
 def read_places(zpath, idx):
     z = zipfile.ZipFile(zpath)
-    places = defaultdict(list)
+    places, streets = defaultdict(list), defaultdict(list)
     keep = {'City', 'Town', 'Village', 'Hamlet', 'Other Settlement', 'Suburban Area'}
     for n in z.namelist():
         if not (n.startswith('Data/') and n.endswith('.csv')):
             continue
         with z.open(n) as fh:
             for row in csv.reader(io.TextIOWrapper(fh, 'utf-8-sig')):
-                if len(row) < 10 or row[6] != 'populatedPlace' or row[7] not in keep:
+                if len(row) < 22:
                     continue
-                x, y = float(row[8]), float(row[9])
-                for lad in idx.get((int(x) // CELL, int(y) // CELL), ()):
-                    places[lad].append((row[2], row[7], x, y))
-    log('places for', len(places), 'councils')
-    return places
+                if row[6] == 'populatedPlace' and row[7] in keep:
+                    x, y = float(row[8]), float(row[9])
+                    for lad in idx.get((int(x) // CELL, int(y) // CELL), ()):
+                        places[lad].append((row[2], row[7], x, y))
+                elif row[6] == 'transportNetwork' and row[7] in ('Named Road', 'Numbered Road'):
+                    town = row[18] or row[21] or row[24]
+                    if not town:
+                        continue
+                    x, y = float(row[8]), float(row[9])
+                    for lad in idx.get((int(x) // CELL, int(y) // CELL), ()):
+                        streets[lad].append((row[2], town, x, y))
+    log('places for', len(places), 'councils; street towns for', len(streets))
+    return places, streets
 
 
 # ---------------------------------------------------------------- packs
@@ -246,7 +255,7 @@ def wgs(xy):
     return np.round(lat * 1e5).astype(np.int64), np.round(lon * 1e5).astype(np.int64)
 
 
-def build_pack(lad, name, nation, ward_names, tmp, places, out, sources, built):
+def build_pack(lad, name, nation, ward_names, tmp, places, streets, out, sources, built):
     rows = [l.rstrip('\n').split(',') for l in open(os.path.join(tmp, lad + '.addr'))]
     xy = np.array([[float(r[0]), float(r[1])] for r in rows])
     la, lo = wgs(xy)
@@ -270,9 +279,14 @@ def build_pack(lad, name, nation, ward_names, tmp, places, out, sources, built):
     for nm, typ, x, y in places.get(lad, []):
         a, b = wgs(np.array([[x, y]]))
         pl.append([nm, typ, int(a[0]) / 1e5, int(b[0]) / 1e5])
+    stw = []
+    if streets.get(lad):
+        xy2 = np.array([[x, y] for _, _, x, y in streets[lad]])
+        a2, b2 = wgs(xy2)
+        stw = [[nm, town, int(u) / 1e5, int(v) / 1e5] for (nm, town, _, _), u, v in zip(streets[lad], a2, b2)]
     pack = {'v': 1, 'lad': lad, 'name': name, 'nation': nation, 'built': built, 'sources': sources,
             'wards': wards, 'pcs': pcs, 'addr': {'o': [o[0] / 1e5, o[1] / 1e5], 'd': d},
-            'roads': {'o': [o[0] / 1e5, o[1] / 1e5], 'd': roads}, 'places': pl}
+            'roads': {'o': [o[0] / 1e5, o[1] / 1e5], 'd': roads}, 'places': pl, 'streets': stw}
     path = os.path.join(out, lad + '.json.gz')
     with gzip.open(path, 'wt', compresslevel=9) as f:
         json.dump(pack, f, separators=(',', ':'), ensure_ascii=False)
@@ -322,13 +336,13 @@ def main():
     os.remove(os.path.join(a.workdir, g))
 
     z = download(names_url, os.path.join(a.workdir, 'names.zip'))
-    places = read_places(z, place_idx)
+    places, streets = read_places(z, place_idx)
     os.remove(z)
 
     index = []
     for lad in sorted(counts):
         info = build_pack(lad, lad_names.get(lad, lad), nation[lad], ward_names, tmp, places,
-                          a.out, sources, built)
+                          streets, a.out, sources, built)
         index.append(info)
         log('pack', lad, info['name'], info['addresses'], 'addresses', info['roads'], 'roads',
             info['bytes'] // 1000, 'kB')
