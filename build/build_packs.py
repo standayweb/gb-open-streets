@@ -236,7 +236,7 @@ def read_places(zpath, idx):
                     for lad in idx.get((int(x) // CELL, int(y) // CELL), ()):
                         places[lad].append((row[2], row[7], x, y))
                 elif row[6] == 'transportNetwork' and row[7] in ('Named Road', 'Numbered Road'):
-                    town = row[18] or row[21] or row[24]
+                    town = row[18]          # the settlement; blank in open country
                     if not town:
                         continue
                     x, y = float(row[8]), float(row[9])
